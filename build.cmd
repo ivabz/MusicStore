@@ -20,7 +20,9 @@ IF EXIST packages\KoreBuild goto run
 .nuget\NuGet.exe install Sake -version 0.2 -o packages -ExcludeVersion
 
 IF "%SKIP_KRE_INSTALL%"=="1" goto run
-CALL packages\KoreBuild\build\kvm upgrade -svr50 -x86
+CALL packages\KoreBuild\build\kvm upgrade -x64
+CALL packages\KoreBuild\build\kvm install default -svrc50 -x64
+CALL packages\KoreBuild\build\kvm install default -x86
 CALL packages\KoreBuild\build\kvm install default -svrc50 -x86
 
 :run

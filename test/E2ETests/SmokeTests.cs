@@ -9,36 +9,52 @@ namespace E2ETests
 {
     public class SmokeTests
     {
-        private const string Connection_string_Format = "Server=(localdb)\\v11.0;Database={0};Trusted_Connection=True;MultipleActiveResultSets=true";
+        private const string Connection_string_Format = "Server=(localdb)\\MSSQLLocalDB;Database={0};Trusted_Connection=True;MultipleActiveResultSets=true";
 
         private string ApplicationBaseUrl;
         private HttpClient httpClient;
         private HttpClientHandler httpClientHandler;
 
         [Theory]
-        [InlineData(HostType.Helios, KreFlavor.DesktopClr, "http://localhost:5001/")]
-        [InlineData(HostType.SelfHost, KreFlavor.DesktopClr, "http://localhost:5002/")]
-        [InlineData(HostType.Helios, KreFlavor.CoreClr, "http://localhost:5001/")]
-        [InlineData(HostType.SelfHost, KreFlavor.CoreClr, "http://localhost:5002/")]
-        public void SmokeTestSuite(HostType hostType, KreFlavor kreFlavor, string applicationBaseUrl)
+        [InlineData(ServerType.Helios, KreFlavor.DesktopClr, KreArchitecture.x86, "http://localhost:5001/")]
+        [InlineData(ServerType.WebListener, KreFlavor.DesktopClr, KreArchitecture.x86, "http://localhost:5002/")]
+        [InlineData(ServerType.Kestrel, KreFlavor.DesktopClr, KreArchitecture.x86, "http://localhost:5004/")]
+        [InlineData(ServerType.Helios, KreFlavor.CoreClr, KreArchitecture.x86, "http://localhost:5001/")]
+        [InlineData(ServerType.WebListener, KreFlavor.CoreClr, KreArchitecture.x86, "http://localhost:5002/")]
+        [InlineData(ServerType.Kestrel, KreFlavor.CoreClr, KreArchitecture.x86, "http://localhost:5004/")]
+        [InlineData(ServerType.WebListener, KreFlavor.DesktopClr, KreArchitecture.x64, "http://localhost:5002/")]
+        // Uncomment Core CLR on x64 after following bugs are resolved
+        // https://github.com/aspnet/Identity/issues/157
+        // https://github.com/aspnet/Mvc/issues/846
+        //[InlineData(ServerType.Helios, KreFlavor.CoreClr, KreArchitecture.x64, "http://localhost:5001/")]
+        //[InlineData(ServerType.Kestrel, KreFlavor.CoreClr, KreArchitecture.x64, "http://localhost:5004/")]
+        public void SmokeTestSuite(ServerType hostType, KreFlavor kreFlavor, KreArchitecture architecture, string applicationBaseUrl)
         {
+            Console.WriteLine("Variation Details : HostType = {0}, KreFlavor = {1}, Architecture = {2}, applicationBaseUrl = {3}", hostType, kreFlavor, architecture, applicationBaseUrl);
+
+            // Check if processor architecture is x64, else skip test
+            if (architecture == KreArchitecture.x64 && !Environment.Is64BitOperatingSystem)
+            {
+                Console.WriteLine("Skipping x64 test since machine is of type x86");
+                Assert.True(true);
+                return;
+            }
+
             var testStartTime = DateTime.Now;
             var musicStoreDbName = Guid.NewGuid().ToString().Replace("-", string.Empty);
-            var musicStoreIdentityDbName = Guid.NewGuid().ToString().Replace("-", string.Empty);
 
             Console.WriteLine("Pointing MusicStore DB to '{0}'", string.Format(Connection_string_Format, musicStoreDbName));
-            Console.WriteLine("Pointing MusicStoreIdentity DB to '{0}'", string.Format(Connection_string_Format, musicStoreIdentityDbName));
 
             //Override the connection strings using environment based configuration
             Environment.SetEnvironmentVariable("SQLAZURECONNSTR_DefaultConnection", string.Format(Connection_string_Format, musicStoreDbName));
-            Environment.SetEnvironmentVariable("SQLAZURECONNSTR_IdentityConnection", string.Format(Connection_string_Format, musicStoreIdentityDbName));
 
             ApplicationBaseUrl = applicationBaseUrl;
             Process hostProcess = null;
+            bool testSuccessful = false;
 
             try
             {
-                hostProcess = DeploymentUtility.StartApplication(hostType, kreFlavor, musicStoreIdentityDbName);
+                hostProcess = DeploymentUtility.StartApplication(hostType, kreFlavor, architecture, musicStoreDbName);
                 httpClientHandler = new HttpClientHandler();
                 httpClient = new HttpClient(httpClientHandler) { BaseAddress = new Uri(applicationBaseUrl) };
 
@@ -48,6 +64,9 @@ namespace E2ETests
                 var initializationCompleteTime = DateTime.Now;
                 Console.WriteLine("[Time]: Approximate time taken for application initialization : '{0}' seconds", (initializationCompleteTime - testStartTime).TotalSeconds);
                 VerifyHomePage(response, responseContent);
+
+                //Verify the static file middleware can serve static content
+                VerifyStaticContentServed();
 
                 //Making a request to a protected resource should automatically redirect to login page
                 AccessStoreWithoutPermissions();
@@ -97,15 +116,28 @@ namespace E2ETests
                 //Get details of the album
                 VerifyAlbumDetails(albumId, albumName);
 
+                //Add an album to cart and checkout the same
+                AddAlbumToCart(albumId, albumName);
+                CheckOutCartItems();
+
+                //Delete the album from store
+                DeleteAlbum(albumId, albumName);
+
                 //Logout from this user session - This should take back to the home page
                 SignOutUser("Administrator");
 
                 var testCompletionTime = DateTime.Now;
                 Console.WriteLine("[Time]: All tests completed in '{0}' seconds", (testCompletionTime - initializationCompleteTime).TotalSeconds);
                 Console.WriteLine("[Time]: Total time taken for this test variation '{0}' seconds", (testCompletionTime - testStartTime).TotalSeconds);
+                testSuccessful = true;
             }
             finally
             {
+                if (!testSuccessful)
+                {
+                    Console.WriteLine("Some tests failed. Proceeding with cleanup.");
+                }
+
                 if (hostProcess != null && !hostProcess.HasExited)
                 {
                     //Shutdown the host process
@@ -126,20 +158,29 @@ namespace E2ETests
                 }
 
                 DbUtils.DropDatabase(musicStoreDbName);
-                DbUtils.DropDatabase(musicStoreIdentityDbName);
             }
+        }
+
+        private void VerifyStaticContentServed()
+        {
+            Console.WriteLine("Validating if static contents are served..");
+            Console.WriteLine("Fetching favicon.ico..");
+            var response = httpClient.GetAsync("/favicon.ico").Result;
+            ThrowIfResponseStatusNotOk(response);
+
+            Console.WriteLine("Fetching /Content/bootstrap.css..");
+            response = httpClient.GetAsync("/Content/bootstrap.css").Result;
+            ThrowIfResponseStatusNotOk(response);
+            Console.WriteLine("Verified static contents are served successfully");
         }
 
         private void VerifyHomePage(HttpResponseMessage response, string responseContent)
         {
             Console.WriteLine("Home page content : {0}", responseContent);
             Assert.Equal<HttpStatusCode>(HttpStatusCode.OK, response.StatusCode);
-            Assert.Contains("ASP.NET MVC Music Store", responseContent, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("<li><a href=\"/\">Home</a></li>", responseContent, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("<a class=\"dropdown-toggle\" data-toggle=\"dropdown\">Store <b class=\"caret\"></b></a>", responseContent, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("<ul class=\"dropdown-menu\">", responseContent, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("<li class=\"divider\"></li>", responseContent, StringComparison.OrdinalIgnoreCase);
+            ValidateLayoutPage(responseContent);
             Assert.Contains("<a href=\"/Store/Details/", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<title>Home Page – MVC Music Store</title>", responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Register", responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Login", responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("mvcmusicstore.codeplex.com", responseContent, StringComparison.OrdinalIgnoreCase);
@@ -147,11 +188,23 @@ namespace E2ETests
             Console.WriteLine("Application initialization successful.");
         }
 
+        private void ValidateLayoutPage(string responseContent)
+        {
+            Assert.Contains("ASP.NET MVC Music Store", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<li><a href=\"/\">Home</a></li>", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<a href=\"/Store\" class=\"dropdown-toggle\" data-toggle=\"dropdown\">Store <b class=\"caret\"></b></a>", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<ul class=\"dropdown-menu\">", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<li class=\"divider\"></li>", responseContent, StringComparison.OrdinalIgnoreCase);
+        }
+
         private void AccessStoreWithoutPermissions(string userName = null)
         {
             Console.WriteLine("Trying to access StoreManager that needs ManageStore claim with the current user : {0}", userName ?? "Anonymous");
             var response = httpClient.GetAsync("/StoreManager/").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
+            ValidateLayoutPage(responseContent);
+            Assert.Contains("<title>Log in – MVC Music Store</title>", responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("<h4>Use a local account to log in.</h4>", responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Equal<string>(ApplicationBaseUrl + "Account/Login?ReturnUrl=%2FStoreManager%2F", response.RequestMessage.RequestUri.AbsoluteUri);
             Console.WriteLine("Redirected to login page as expected.");
@@ -161,6 +214,7 @@ namespace E2ETests
         {
             Console.WriteLine("Trying to access the store inventory..");
             var response = httpClient.GetAsync("/StoreManager/").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             Assert.Equal<string>(ApplicationBaseUrl + "StoreManager/", response.RequestMessage.RequestUri.AbsoluteUri);
             Console.WriteLine("Successfully acccessed the store inventory");
@@ -170,7 +224,9 @@ namespace E2ETests
         {
             Console.WriteLine("Trying to create user with not matching password and confirm password");
             var response = httpClient.GetAsync("/Account/Register").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
+            ValidateLayoutPage(responseContent);
 
             var generatedUserName = Guid.NewGuid().ToString().Replace("-", string.Empty);
             Console.WriteLine("Creating a new user with name '{0}'", generatedUserName);
@@ -193,7 +249,9 @@ namespace E2ETests
         private string RegisterValidUser()
         {
             var response = httpClient.GetAsync("/Account/Register").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
+            ValidateLayoutPage(responseContent);
 
             var generatedUserName = Guid.NewGuid().ToString().Replace("-", string.Empty);
             Console.WriteLine("Creating a new user with name '{0}'", generatedUserName);
@@ -220,6 +278,7 @@ namespace E2ETests
         {
             Console.WriteLine("Trying to register a user with name '{0}' again", userName);
             var response = httpClient.GetAsync("/Account/Register").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             Console.WriteLine("Creating a new user with name '{0}'", userName);
             var formParameters = new List<KeyValuePair<string, string>>
@@ -241,7 +300,9 @@ namespace E2ETests
         {
             Console.WriteLine("Signing out from '{0}''s session", userName);
             var response = httpClient.GetAsync(string.Empty).Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
+            ValidateLayoutPage(responseContent);
             var formParameters = new List<KeyValuePair<string, string>>
                 {
                     new KeyValuePair<string, string>("__RequestVerificationToken", HtmlDOMHelper.RetrieveAntiForgeryToken(responseContent, "/Account/LogOff")),
@@ -263,6 +324,7 @@ namespace E2ETests
         private void SignInWithInvalidPassword(string userName, string invalidPassword)
         {
             var response = httpClient.GetAsync("/Account/Login").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             Console.WriteLine("Signing in with user '{0}'", userName);
             var formParameters = new List<KeyValuePair<string, string>>
@@ -284,6 +346,7 @@ namespace E2ETests
         private void SignInWithUser(string userName, string password)
         {
             var response = httpClient.GetAsync("/Account/Login").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             Console.WriteLine("Signing in with user '{0}'", userName);
             var formParameters = new List<KeyValuePair<string, string>>
@@ -306,6 +369,7 @@ namespace E2ETests
         private void ChangePassword(string userName)
         {
             var response = httpClient.GetAsync("/Account/Manage").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             var formParameters = new List<KeyValuePair<string, string>>
                 {
@@ -328,6 +392,7 @@ namespace E2ETests
             var albumName = Guid.NewGuid().ToString().Replace("-", string.Empty).Substring(0, 12);
             Console.WriteLine("Trying to create an album with name '{0}'", albumName);
             var response = httpClient.GetAsync("/StoreManager/create").Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             var formParameters = new List<KeyValuePair<string, string>>
                 {
@@ -352,6 +417,7 @@ namespace E2ETests
         {
             Console.WriteLine("Fetching the album id of '{0}'", albumName);
             var response = httpClient.GetAsync(string.Format("/StoreManager/GetAlbumIdFromName?albumName={0}", albumName)).Result;
+            ThrowIfResponseStatusNotOk(response);
             var albumId = response.Content.ReadAsStringAsync().Result;
             Console.WriteLine("Album id for album '{0}' is '{1}'", albumName, albumId);
             return albumId;
@@ -361,11 +427,80 @@ namespace E2ETests
         {
             Console.WriteLine("Getting details of album with Id '{0}'", albumId);
             var response = httpClient.GetAsync(string.Format("/StoreManager/Details?id={0}", albumId)).Result;
+            ThrowIfResponseStatusNotOk(response);
             var responseContent = response.Content.ReadAsStringAsync().Result;
             Assert.Contains(albumName, responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("http://myapp/testurl", responseContent, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("<a href=\"/StoreManager/Edit/463\">Edit</a>", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(string.Format("<a href=\"/StoreManager/Edit/{0}\">Edit</a>", albumId), responseContent, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("<a href=\"/StoreManager\">Back to List</a>", responseContent, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void AddAlbumToCart(string albumId, string albumName)
+        {
+            Console.WriteLine("Adding album id '{0}' to the cart", albumId);
+            var response = httpClient.GetAsync(string.Format("/ShoppingCart/AddToCart?id={0}", albumId)).Result;
+            ThrowIfResponseStatusNotOk(response);
+            var responseContent = response.Content.ReadAsStringAsync().Result;
+            Assert.Contains(albumName, responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<span class=\"glyphicon glyphicon glyphicon-shopping-cart\"></span>", responseContent, StringComparison.OrdinalIgnoreCase);
+            Console.WriteLine("Verified that album is added to cart");
+        }
+
+        private void CheckOutCartItems()
+        {
+            Console.WriteLine("Checking out the cart contents...");
+            var response = httpClient.GetAsync("/Checkout/AddressAndPayment").Result;
+            ThrowIfResponseStatusNotOk(response);
+            var responseContent = response.Content.ReadAsStringAsync().Result;
+
+            var formParameters = new List<KeyValuePair<string, string>>
+                {
+                    new KeyValuePair<string, string>("__RequestVerificationToken", HtmlDOMHelper.RetrieveAntiForgeryToken(responseContent, "/Checkout/AddressAndPayment")),
+                    new KeyValuePair<string, string>("FirstName", "FirstNameValue"),
+                    new KeyValuePair<string, string>("LastName", "LastNameValue"),
+                    new KeyValuePair<string, string>("Address", "AddressValue"),
+                    new KeyValuePair<string, string>("City", "Redmond"),
+                    new KeyValuePair<string, string>("State", "WA"),
+                    new KeyValuePair<string, string>("PostalCode", "98052"),
+                    new KeyValuePair<string, string>("Country", "USA"),
+                    new KeyValuePair<string, string>("Phone", "PhoneValue"),
+                    new KeyValuePair<string, string>("Email", "email@email.com"),
+                    new KeyValuePair<string, string>("PromoCode", "FREE"),
+                };
+
+            var content = new FormUrlEncodedContent(formParameters.ToArray());
+            response = httpClient.PostAsync("/Checkout/AddressAndPayment", content).Result;
+            responseContent = response.Content.ReadAsStringAsync().Result;
+            Assert.Contains("<h2>Checkout Complete</h2>", responseContent, StringComparison.OrdinalIgnoreCase);
+            Assert.StartsWith(ApplicationBaseUrl + "Checkout/Complete/", response.RequestMessage.RequestUri.AbsoluteUri, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void DeleteAlbum(string albumId, string albumName)
+        {
+            Console.WriteLine("Deleting album '{0}' from the store..", albumName);
+
+            var formParameters = new List<KeyValuePair<string, string>>
+                {
+                    new KeyValuePair<string, string>("id", albumId)
+                };
+
+            var content = new FormUrlEncodedContent(formParameters.ToArray());
+            var response = httpClient.PostAsync("/StoreManager/RemoveAlbum", content).Result;
+            ThrowIfResponseStatusNotOk(response);
+
+            Console.WriteLine("Verifying if the album '{0}' is deleted from store", albumName);
+            response = httpClient.GetAsync(string.Format("/StoreManager/GetAlbumIdFromName?albumName={0}", albumName)).Result;
+            Assert.Equal<HttpStatusCode>(HttpStatusCode.NotFound, response.StatusCode);
+            Console.WriteLine("Album is successfully deleted from the store.", albumName, albumId);
+        }
+
+        private void ThrowIfResponseStatusNotOk(HttpResponseMessage response)
+        {
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                Console.WriteLine(response.Content.ReadAsStringAsync().Result);
+                throw new Exception(string.Format("Received the above response with status code : {0}", response.StatusCode.ToString()));
+            }
         }
     }
 }

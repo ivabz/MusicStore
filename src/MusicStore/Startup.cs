@@ -3,7 +3,6 @@ using Microsoft.AspNet.Builder;
 using Microsoft.AspNet.Diagnostics;
 using Microsoft.AspNet.Http;
 using Microsoft.AspNet.Identity;
-using Microsoft.AspNet.Identity.Security;
 using Microsoft.AspNet.Routing;
 using Microsoft.AspNet.Security.Cookies;
 using Microsoft.Data.Entity;
@@ -25,38 +24,52 @@ namespace MusicStore
             configuration.AddJsonFile("LocalConfig.json");
             configuration.AddEnvironmentVariables(); //All environment variables in the process's context flow in as configuration values.
 
+	     /* Error page middleware displays a nice formatted HTML page for any unhandled exceptions in the request pipeline.
+             * Note: ErrorPageOptions.ShowAll to be used only at development time. Not recommended for production.
+             */
+            app.UseErrorPage(ErrorPageOptions.ShowAll);
+
             app.UseServices(services =>
             {
+                //If this type is present - we're on mono
+                var runningOnMono = Type.GetType("Mono.Runtime") != null;
+
                 // Add EF services to the services container
-                services.AddEntityFramework()
-                        .AddSqlServer();
+                if (runningOnMono)
+                {
+                    services.AddEntityFramework()
+                            .AddInMemoryStore();
+                }
+                else
+                {
+                    services.AddEntityFramework()
+                            .AddSqlServer();
+                }
 
                 services.AddScoped<MusicStoreContext>();
 
                 // Configure DbContext           
-                services.SetupOptions<IdentityDbContextOptions>(options =>
+                services.SetupOptions<MusicStoreDbContextOptions>(options =>
                         {
                             options.DefaultAdminUserName = configuration.Get("DefaultAdminUsername");
                             options.DefaultAdminPassword = configuration.Get("DefaultAdminPassword");
-                            options.UseSqlServer(configuration.Get("Data:IdentityConnection:ConnectionString"));
+                            if (runningOnMono)
+                            {
+                                options.UseInMemoryStore();
+                            }
+                            else
+                            {
+                                options.UseSqlServer(configuration.Get("Data:DefaultConnection:ConnectionString"));
+                            }
                         });
 
-                services.SetupOptions<MusicStoreDbContextOptions>(options =>
-                    options.UseSqlServer(configuration.Get("Data:DefaultConnection:ConnectionString")));
-
                 // Add Identity services to the services container
-                services.AddIdentity<ApplicationUser>()
-                        .AddEntityFramework<ApplicationUser, ApplicationDbContext>()
-                        .AddHttpSignIn();
+                services.AddIdentitySqlServer<MusicStoreContext, ApplicationUser>()
+                        .AddAuthentication();
 
                 // Add MVC services to the services container
                 services.AddMvc();
             });
-
-            /* Error page middleware displays a nice formatted HTML page for any unhandled exceptions in the request pipeline.
-             * Note: ErrorPageOptions.ShowAll to be used only at development time. Not recommended for production.
-             */
-            app.UseErrorPage(ErrorPageOptions.ShowAll);
 
             // Add static files to the request pipeline
             app.UseStaticFiles();
@@ -64,7 +77,7 @@ namespace MusicStore
             // Add cookie-based authentication to the request pipeline
             app.UseCookieAuthentication(new CookieAuthenticationOptions
             {
-                AuthenticationType = DefaultAuthenticationTypes.ApplicationCookie,
+                AuthenticationType = ClaimsIdentityOptions.DefaultAuthenticationType,
                 LoginPath = new PathString("/Account/Login"),
             });
 
@@ -83,7 +96,6 @@ namespace MusicStore
 
             //Populates the MusicStore sample data
             SampleData.InitializeMusicStoreDatabaseAsync(app.ApplicationServices).Wait();
-            SampleData.InitializeIdentityDatabaseAsync(app.ApplicationServices).Wait();
         }
     }
 }

@@ -23,13 +23,14 @@
     <SchemaVersion>2.0</SchemaVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="Project.json" />
+    <Content Include="project.json" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="DeploymentUtility.cs" />
     <Compile Include="DbUtils.cs" />
     <Compile Include="Extensions.cs" />
-    <Compile Include="HostType.cs" />
+    <Compile Include="KreArchitecture.cs" />
+    <Compile Include="ServerType.cs" />
     <Compile Include="HtmlDOMHelper.cs" />
     <Compile Include="KreFlavor.cs" />
     <Compile Include="SmokeTests.cs" />
