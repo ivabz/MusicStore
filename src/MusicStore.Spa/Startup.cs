@@ -16,7 +16,7 @@ namespace MusicStore.Spa
 {
     public class Startup
     {
-        public void Configure(IBuilder app)
+        public void Configure(IApplicationBuilder app)
         {
             var configuration = new Configuration()
                 .AddJsonFile("Config.json")
@@ -43,9 +43,8 @@ namespace MusicStore.Spa
                     .AddSqlServer();
 
                 // Add Identity services to the service container
-                services.AddIdentity<ApplicationUser>()
-                    .AddEntityFramework<ApplicationUser, ApplicationDbContext>()
-                    .AddHttpSignIn();
+                services.AddIdentitySqlServer<ApplicationDbContext, ApplicationUser>()
+                    .AddAuthentication();
 
                 // Add application services to the service container
                 services.AddScoped<MusicStoreContext>();
@@ -61,7 +60,7 @@ namespace MusicStore.Spa
             // Add cookie auth
             app.UseCookieAuthentication(new CookieAuthenticationOptions
             {
-                AuthenticationType = DefaultAuthenticationTypes.ApplicationCookie,
+                AuthenticationType = ClaimsIdentityOptions.DefaultAuthenticationType,
                 LoginPath = new PathString("/Account/Login")
             });
 

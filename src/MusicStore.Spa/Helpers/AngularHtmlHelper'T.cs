@@ -6,7 +6,7 @@ namespace Microsoft.AspNet.Mvc.Rendering
 {
     public class AngularHtmlHelper<TModel> : HtmlHelper<TModel>
     {
-        public AngularHtmlHelper(IViewEngine viewEngine, IModelMetadataProvider metadataProvider, IUrlHelper urlHelper, AntiForgery antiForgeryInstance, IActionBindingContextProvider actionBindingContextProvider)
+        public AngularHtmlHelper(ICompositeViewEngine viewEngine, IModelMetadataProvider metadataProvider, IUrlHelper urlHelper, AntiForgery antiForgeryInstance, IActionBindingContextProvider actionBindingContextProvider)
             : base(viewEngine, metadataProvider, urlHelper, antiForgeryInstance, actionBindingContextProvider)
         {
             
@@ -24,12 +24,7 @@ namespace Microsoft.AspNet.Mvc.Rendering
 
         public IEnumerable<ModelClientValidationRule> GetClientValidators(string name, ModelMetadata metadata)
         {
-            return GetClientValidationRules(name, metadata);
-        }
-
-        public HtmlString GetFullHtmlFieldId(string expression)
-        {
-            return GenerateId(expression);
+            return GetClientValidationRules(metadata, name);
         }
     }
 }
